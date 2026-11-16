@@ -18,6 +18,12 @@ window.lyrics { background-color: rgb(18, 18, 22); border-radius: 10px; }
 .status { color: #c9ced6; font-size: 12pt; }
 .line { color: #6f7682; font-size: 12pt; }
 .line.active { color: #ffffff; font-size: 15pt; font-weight: bold; }
+.sync-row { padding: 2px 4px; border-radius: 4px; }
+.sync-row.next { background-color: rgba(255, 255, 255, 0.12); }
+.sync-row.bad { background-color: rgba(255, 80, 80, 0.30); }
+.sync-stamp { color: #7d8590; font-size: 9pt; }
+.sync-text { color: #c9ced6; font-size: 12pt; }
+.sync-bar label { color: #c9ced6; font-size: 10pt; }
 button.close { color: #9aa0aa; background: none; border: none; box-shadow: none;
                padding: 0 6px; min-height: 0; min-width: 0; }
 button.close:hover { color: #ff6b6b; }
@@ -80,6 +86,12 @@ class LyricsWindow(Gtk.Window):
         self._scroll_timer = 0
         self.on_edit = None
         self.on_reload = None
+        self.on_sync = None
+        self.in_sync_mode = False
+        self._saved_vis = {}
+        self._sync_cbs = {}
+        self._sync_rows = []
+        self._sync_stamps = []
 
         self.set_decorated(False)
         self.set_keep_above(True)
@@ -123,7 +135,24 @@ class LyricsWindow(Gtk.Window):
         header.pack_end(self._edit_btn, False, False, 0)
         self._reload_btn = self._header_button("⟳", "Muat ulang lirik", lambda: self.on_reload)
         header.pack_end(self._reload_btn, False, False, 0)
+        self._sync_btn = self._header_button("⏱", "Sinkronkan lirik", lambda: self.on_sync)
+        header.pack_end(self._sync_btn, False, False, 0)
         outer.pack_start(header, False, False, 0)
+
+        self._sync_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._sync_bar.get_style_context().add_class("sync-bar")
+        self._sync_bar.set_no_show_all(True)
+        self._sync_label = Gtk.Label(label="")
+        self._sync_label.set_xalign(0)
+        self._sync_label.set_line_wrap(True)
+        self._sync_bar.pack_start(self._sync_label, True, True, 0)
+        self._save_btn = Gtk.Button(label="Simpan")
+        self._cancel_btn = Gtk.Button(label="Batal")
+        for btn, key in ((self._cancel_btn, "cancel"), (self._save_btn, "save")):
+            btn.set_can_focus(False)  # so Space never activates a button
+            btn.connect("clicked", lambda *_a, k=key: self._sync_cb(k))
+            self._sync_bar.pack_end(btn, False, False, 0)
+        outer.pack_start(self._sync_bar, False, False, 0)
 
         self._scroller = Gtk.ScrolledWindow()
         self._scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.EXTERNAL)
@@ -142,6 +171,7 @@ class LyricsWindow(Gtk.Window):
         self.connect("scroll-event", self._on_scroll)
         # The ScrolledWindow would otherwise swallow Ctrl+scroll over the lyrics.
         self._scroller.connect("scroll-event", self._on_scroll)
+        self.connect("key-press-event", self._on_key)
         self.connect("delete-event", self._on_delete)
 
         if self._cfg["x"] is not None and self._cfg["y"] is not None:
@@ -178,12 +208,116 @@ class LyricsWindow(Gtk.Window):
         btn.connect("clicked", clicked)
         return btn
 
+    def _set_header_visible(self, btn, visible: bool) -> None:
+        if self.in_sync_mode:  # applied when sync mode ends
+            self._saved_vis[btn] = visible
+        elif visible:
+            btn.show()
+        else:
+            btn.hide()
+
     def set_song_controls(self, visible: bool) -> None:
         for btn in (self._edit_btn, self._reload_btn):
-            if visible:
-                btn.show()
-            else:
-                btn.hide()
+            self._set_header_visible(btn, visible)
+
+    def set_sync_button_visible(self, visible: bool) -> None:
+        self._set_header_visible(self._sync_btn, visible)
+
+    # ---- sync mode -----------------------------------------------------
+    def _sync_cb(self, key):
+        cb = self._sync_cbs.get(key)
+        if cb is not None:
+            cb()
+
+    def enter_sync_mode(self, texts, on_mark, on_mark_next, on_save, on_cancel) -> None:
+        self._clear()
+        self.in_sync_mode = True
+        self._sync_cbs = {"next": on_mark_next, "save": on_save, "cancel": on_cancel}
+        self._saved_vis = {
+            b: b.get_visible() for b in (self._edit_btn, self._reload_btn, self._sync_btn)
+        }
+        for btn in self._saved_vis:
+            btn.hide()
+        self.set_accept_focus(True)  # needed for the Space shortcut; undone on exit
+        self._box.set_valign(Gtk.Align.START)
+        self._box.set_margin_top(4)
+        self._box.set_margin_bottom(4)
+        self._sync_stamps = []
+        for i, text in enumerate(texts):
+            row = Gtk.EventBox()
+            row.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+            row.get_style_context().add_class("sync-row")
+            hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            stamp = Gtk.Label(label="")
+            stamp.set_width_chars(10)
+            stamp.set_xalign(1)
+            stamp.get_style_context().add_class("sync-stamp")
+            line = Gtk.Label(label=text)
+            line.set_line_wrap(True)
+            line.set_xalign(0)
+            line.get_style_context().add_class("sync-text")
+            hbox.pack_start(stamp, False, False, 0)
+            hbox.pack_start(line, True, True, 0)
+            row.add(hbox)
+
+            def pressed(_w, ev, index=i):
+                if ev.button == 1:
+                    on_mark(index)
+                return True  # never start a window drag from a lyric row
+
+            row.connect("button-press-event", pressed)
+            self._sync_stamps.append(stamp)
+            self._labels.append(row)
+            self._box.pack_start(row, False, False, 0)
+        self._box.show_all()
+        self._sync_bar.show()
+        self._sync_label.show()
+        self._save_btn.show()
+        self._cancel_btn.show()
+        self._save_btn.set_sensitive(False)
+        self._scroller.get_vadjustment().set_value(0)
+
+    def set_sync_row(self, index: int, stamp_text) -> None:
+        if 0 <= index < len(self._sync_stamps):
+            self._sync_stamps[index].set_text(stamp_text or "")
+
+    def set_sync_state(self, next_index, done: int, total: int, message: str = "",
+                       bad_index=None) -> None:
+        if not self.in_sync_mode:
+            return
+        text = f"Sinkron: {done}/{total} baris"
+        self._sync_label.set_text(f"{text} — {message}" if message else text)
+        self._save_btn.set_sensitive(total > 0 and done == total)
+        for i, row in enumerate(self._labels):
+            ctx = row.get_style_context()
+            ctx.remove_class("next")
+            ctx.remove_class("bad")
+            if i == next_index:
+                ctx.add_class("next")
+            if i == bad_index:
+                ctx.add_class("bad")
+        if next_index is not None and 0 <= next_index < len(self._labels):
+            self._active = next_index
+            GLib.idle_add(self._scroll_to_active)
+
+    def exit_sync_mode(self) -> None:
+        if not self.in_sync_mode:
+            return
+        self.in_sync_mode = False
+        self.set_accept_focus(False)
+        self._sync_bar.hide()
+        self._sync_cbs = {}
+        self._sync_stamps = []
+        for btn, visible in self._saved_vis.items():
+            btn.show() if visible else btn.hide()
+        self._saved_vis = {}
+        self._clear()
+
+    def _on_key(self, _w, ev):
+        if self.in_sync_mode and ev.keyval == Gdk.KEY_space:
+            self._sync_cb("next")
+            return True
+        return False
 
     def set_status(self, text: str, action=None) -> None:
         self._clear()
