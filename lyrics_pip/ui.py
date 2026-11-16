@@ -72,6 +72,8 @@ class LyricsWindow(Gtk.Window):
         self._active = -1
         self._scroll_target = None
         self._scroll_timer = 0
+        self.on_edit = None
+        self.on_reload = None
 
         self.set_decorated(False)
         self.set_keep_above(True)
@@ -111,6 +113,10 @@ class LyricsWindow(Gtk.Window):
         close.set_can_focus(False)
         close.connect("clicked", lambda *_: self.close())
         header.pack_end(close, False, False, 0)
+        self._edit_btn = self._header_button("✎", "Ubah lirik", lambda: self.on_edit)
+        header.pack_end(self._edit_btn, False, False, 0)
+        self._reload_btn = self._header_button("⟳", "Muat ulang lirik", lambda: self.on_reload)
+        header.pack_end(self._reload_btn, False, False, 0)
         outer.pack_start(header, False, False, 0)
 
         self._scroller = Gtk.ScrolledWindow()
@@ -150,13 +156,43 @@ class LyricsWindow(Gtk.Window):
         self._active = -1
         self._synced = False
 
-    def set_status(self, text: str) -> None:
+    def _header_button(self, label, tooltip, get_callback):
+        btn = Gtk.Button(label=label)
+        btn.get_style_context().add_class("close")
+        btn.set_relief(Gtk.ReliefStyle.NONE)
+        btn.set_can_focus(False)
+        btn.set_tooltip_text(tooltip)
+        btn.set_no_show_all(True)  # hidden until set_song_controls(True)
+
+        def clicked(*_):
+            cb = get_callback()
+            if cb is not None:
+                cb()
+
+        btn.connect("clicked", clicked)
+        return btn
+
+    def set_song_controls(self, visible: bool) -> None:
+        for btn in (self._edit_btn, self._reload_btn):
+            if visible:
+                btn.show()
+            else:
+                btn.hide()
+
+    def set_status(self, text: str, action=None) -> None:
         self._clear()
         self._title.set_text("")
         self._box.set_margin_top(0)
         self._box.set_margin_bottom(0)
         self._box.set_valign(Gtk.Align.CENTER)
         self._box.pack_start(_label(text, "status"), False, False, 0)
+        if action is not None:
+            label, callback = action
+            btn = Gtk.Button(label=label)
+            btn.set_can_focus(False)
+            btn.set_halign(Gtk.Align.CENTER)
+            btn.connect("clicked", lambda *_: callback())
+            self._box.pack_start(btn, False, False, 0)
         self._box.show_all()
 
     def set_lyrics(self, lyrics, title: str, artist: str) -> None:
@@ -276,3 +312,45 @@ class LyricsWindow(Gtk.Window):
         self._cfg.update({"x": x, "y": y, "w": w, "h": h})
         save_config(self._cfg, self._config_path)
         return False
+
+
+class LyricsPasteDialog(Gtk.Dialog):
+    """Paste box for custom lyrics (plain text or LRC)."""
+
+    def __init__(self, parent, heading: str, initial: str = ""):
+        super().__init__(title="Ubah lirik", transient_for=parent, modal=True)
+        self.set_keep_above(True)  # the lyrics window is always on top; so are we
+        self.set_default_size(440, 380)
+        self.add_button("Batal", Gtk.ResponseType.CANCEL)
+        self.add_button("Simpan", Gtk.ResponseType.OK)
+        area = self.get_content_area()
+        area.set_spacing(6)
+        area.set_border_width(8)
+        area.pack_start(Gtk.Label(label=heading, xalign=0), False, False, 0)
+        area.pack_start(
+            Gtk.Label(label="Tempel lirik biasa, atau format LRC ([mm:ss.xx] teks) agar tersorot.",
+                      xalign=0), False, False, 0)
+        self._view = Gtk.TextView()
+        self._view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        scroller = Gtk.ScrolledWindow()
+        scroller.add(self._view)
+        area.pack_start(scroller, True, True, 0)
+        self.set_text(initial)
+        area.show_all()
+
+    def set_text(self, text: str) -> None:
+        self._view.get_buffer().set_text(text)
+
+    def get_text(self) -> str:
+        buf = self._view.get_buffer()
+        return buf.get_text(buf.get_start_iter(), buf.get_end_iter(), True)
+
+
+def ask_lyrics_text(parent, heading: str, initial: str):
+    """Show the paste dialog. Returns the text on Simpan (may be empty), None on cancel."""
+    dialog = LyricsPasteDialog(parent, heading, initial)
+    try:
+        response = dialog.run()
+        return dialog.get_text() if response == Gtk.ResponseType.OK else None
+    finally:
+        dialog.destroy()
