@@ -11,9 +11,10 @@ from gi.repository import GLib, Gtk  # noqa: E402
 from .clock import PositionEstimator
 from .instance import acquire_single_instance
 from .lrc import active_index
-from .lyrics import NETWORK_ERROR, clean_title, fetch_lyrics
+from .custom import CUSTOM_DIR, read_custom_text, resolve_lyrics, save_custom
+from .lyrics import NETWORK_ERROR, clean_title, forget_cached
 from .mpris import MprisReader
-from .ui import LyricsWindow
+from .ui import LyricsWindow, ask_lyrics_text
 
 CACHE_DIR = Path.home() / ".cache" / "lyrics-pip"
 FAST_MS = 250
@@ -26,6 +27,7 @@ MSG_IDLE = "Tidak ada lagu diputar"
 MSG_SEARCHING = "Mencari lirik..."
 MSG_NOT_FOUND = "Lirik tidak ditemukan"
 MSG_RETRY = "Gagal memuat lirik, mencoba lagi..."
+MSG_SAVE_FAILED = "Gagal menyimpan lirik"
 
 
 class App:
@@ -36,10 +38,13 @@ class App:
         self.track_key = None
         self.token = 0
         self.lyrics = None
+        self.current = None
         self._interval = FAST_MS
         self._timer = 0
         self._misses = 0
 
+        self.win.on_edit = self._edit
+        self.win.on_reload = self._reload
         self.win.connect("destroy", lambda *_: Gtk.main_quit())
         self.win.set_status(MSG_IDLE)
         self.win.show_all()
@@ -89,7 +94,9 @@ class App:
     def _reset(self, message: str) -> None:
         self.token += 1
         self.track_key = None
+        self.current = None
         self.lyrics = None
+        self.win.set_song_controls(False)
         self.win.set_status(message)
 
     # ---- fetching ------------------------------------------------------
@@ -97,14 +104,16 @@ class App:
         self.token += 1
         token = self.token
         self.track_key = key
+        self.current = track
         self.lyrics = None
         self.estimator = PositionEstimator()
+        self.win.set_song_controls(True)
         self.win.set_status(MSG_SEARCHING)
 
         def work():
-            result = fetch_lyrics(
+            result = resolve_lyrics(
                 clean_title(track.title, track.artist), track.artist, track.album,
-                track.length, CACHE_DIR,
+                track.length, CACHE_DIR, CUSTOM_DIR,
             )
             GLib.idle_add(self._deliver, token, result, track)
 
@@ -120,11 +129,38 @@ class App:
             return False
         self.lyrics = result
         if result is None:
-            self.win.set_status(MSG_NOT_FOUND)
+            self.win.set_status(MSG_NOT_FOUND, action=("Tambah lirik", self._edit))
         else:
             self.win.set_lyrics(result, track.title, track.artist)
         return False
 
+
+    def _edit(self) -> None:
+        track, key = self.current, self.track_key
+        if track is None:
+            return
+        title = clean_title(track.title, track.artist)
+        heading = f"{track.title} — {track.artist}" if track.artist else track.title
+        initial = read_custom_text(title, track.artist, CUSTOM_DIR)
+        text = ask_lyrics_text(self.win, heading, initial)
+        if text is None:
+            return
+        try:
+            save_custom(title, track.artist, text, CUSTOM_DIR)
+        except OSError:
+            self.win.set_status(MSG_SAVE_FAILED)
+            return
+        if self.track_key == key:  # song may have changed while the dialog was open
+            self._start_fetch(key, track)
+
+    def _reload(self) -> None:
+        track = self.current
+        if track is None:
+            return
+        forget_cached(
+            clean_title(track.title, track.artist), track.artist, track.length, CACHE_DIR
+        )
+        self._start_fetch(self.track_key, track)
 
     def _retry(self, token, key, track) -> bool:
         if token == self.token and key == self.track_key:  # same song still playing
