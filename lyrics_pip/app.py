@@ -9,6 +9,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk  # noqa: E402
 
 from .clock import PositionEstimator
+from .instance import acquire_single_instance
 from .lrc import active_index
 from .lyrics import NETWORK_ERROR, clean_title, fetch_lyrics
 from .mpris import MprisReader
@@ -132,6 +133,9 @@ class App:
 
 
 def main() -> None:
+    lock = acquire_single_instance(CACHE_DIR / "instance.lock")
+    if lock is None:
+        return  # already running; keep the single window
     app = App()
 
     def quit_cleanly():
@@ -141,6 +145,7 @@ def main() -> None:
     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, quit_cleanly)
     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, quit_cleanly)
     Gtk.main()
+    lock.close()
 
 
 if __name__ == "__main__":

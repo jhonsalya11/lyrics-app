@@ -51,6 +51,7 @@ lyrics_pip/
   clock.py    penaksir posisi (Firefox hanya melaporkan detik bulat)
   ui.py       jendela GTK
   app.py      perangkai dan main()
+  instance.py penjaga instance tunggal (file lock)
 tests/        tes unittest
 docs/superpowers/   desain dan rencana pembuatan
 ```
