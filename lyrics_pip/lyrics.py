@@ -162,3 +162,11 @@ def fetch_lyrics(title, artist, album, duration, cache_dir,
         return None
     except Exception:
         return None
+
+
+def forget_cached(title: str, artist: str, duration: float, cache_dir) -> None:
+    """Drop the cached result (lyrics or 'not found' marker) for one song."""
+    try:
+        _cache_path(cache_dir, title, artist, duration).unlink(missing_ok=True)
+    except OSError:
+        pass

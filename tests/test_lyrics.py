@@ -5,7 +5,7 @@ import unittest
 import urllib.error
 from pathlib import Path
 
-from lyrics_pip.lyrics import NETWORK_ERROR, Lyrics, clean_title, fetch_lyrics
+from lyrics_pip.lyrics import NETWORK_ERROR, Lyrics, clean_title, fetch_lyrics, forget_cached
 
 
 class FakeResponse(io.BytesIO):
@@ -160,6 +160,30 @@ class FallbackTest(unittest.TestCase):
         again = ScriptedOpener()
         self.assertIsNone(fetch_lyrics("T", "A", "Al", 200.0, self.cache, opener=again))
         self.assertEqual(again.urls, [])
+
+
+class ForgetCachedTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.cache = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_forget_cached_forces_refetch(self):
+        op = FakeOpener({"plainLyrics": "a"})
+        fetch_lyrics("T", "A", "", 100.0, self.cache, opener=op)
+        forget_cached("T", "A", 100.0, self.cache)
+        fetch_lyrics("T", "A", "", 100.0, self.cache, opener=op)
+        self.assertEqual(len(op.urls), 2)
+
+    def test_forget_cached_clears_not_found_marker(self):
+        fetch_lyrics("T", "A", "", 100.0, self.cache, opener=FakeOpener(error=http404()))
+        forget_cached("T", "A", 100.0, self.cache)
+        op = FakeOpener({"plainLyrics": "found now"})
+        res = fetch_lyrics("T", "A", "", 100.0, self.cache, opener=op)
+        self.assertIsNotNone(res)
+
+    def test_forget_cached_missing_file_is_noop(self):
+        forget_cached("Nope", "A", 1.0, self.cache)
 
 
 if __name__ == "__main__":
