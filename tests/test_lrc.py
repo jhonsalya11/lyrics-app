@@ -24,6 +24,11 @@ class ParseLrcTest(unittest.TestCase):
     def test_parse_keeps_empty_text_lines_as_gaps(self):
         self.assertEqual(parse_lrc("[00:10.00]"), [(10.0, "")])
 
+    def test_parse_accepts_leading_whitespace(self):
+        self.assertEqual(
+            parse_lrc("  [00:01.00]a\n\t[00:02.00]b"), [(1.0, "a"), (2.0, "b")]
+        )
+
     def test_parse_sorts_output(self):
         self.assertEqual(
             parse_lrc("[00:05.00]b\n[00:01.00]a"), [(1.0, "a"), (5.0, "b")]

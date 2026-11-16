@@ -17,7 +17,9 @@ def _clean_part(text: str) -> str:
 def safe_filename(artist: str, title: str) -> str:
     a, t = _clean_part(artist), _clean_part(title)
     name = f"{a} - {t}" if a and t else (a or t)
-    return name[:_MAX_NAME].rstrip() or "untitled"
+    # Cap by encoded bytes: filesystems limit names to 255 bytes, not characters.
+    name = name.encode("utf-8")[:_MAX_NAME].decode("utf-8", "ignore").rstrip()
+    return name or "untitled"
 
 
 def _paths(title, artist, directory):
@@ -27,9 +29,16 @@ def _paths(title, artist, directory):
 
 def _read(path: Path):
     try:
-        return path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8-sig")  # tolerate a BOM
     except (OSError, UnicodeDecodeError):
         return None
+
+
+def _is_lrc(text: str) -> bool:
+    """LRC only if most non-blank lines carry a timestamp (one '[2:30] solo' stays plain)."""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    timed = sum(1 for ln in lines if parse_lrc(ln))
+    return bool(lines) and timed * 2 >= len(lines)
 
 
 def _plain(text: str):
@@ -43,9 +52,8 @@ def load_custom(title: str, artist: str, directory) -> "Lyrics | None":
         text = _read(path)
         if text is None or not text.strip():
             continue
-        synced = parse_lrc(text)
-        if synced:
-            return Lyrics(synced, True)
+        if _is_lrc(text):
+            return Lyrics(parse_lrc(text), True)
         return Lyrics(_plain(text), False)
     return None
 
@@ -62,12 +70,12 @@ def read_custom_text(title: str, artist: str, directory) -> str:
 def save_custom(title: str, artist: str, text: str, directory) -> "Path | None":
     """Save pasted lyrics; empty text deletes this song's custom file. May raise OSError."""
     lrc, txt = _paths(title, artist, directory)
-    text = (text or "").replace("\r\n", "\n").strip()
+    text = (text or "").lstrip("\ufeff").replace("\r\n", "\n").strip()
     if not text:
         lrc.unlink(missing_ok=True)
         txt.unlink(missing_ok=True)
         return None
-    target, other = (lrc, txt) if parse_lrc(text) else (txt, lrc)
+    target, other = (lrc, txt) if _is_lrc(text) else (txt, lrc)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text + "\n", encoding="utf-8")
     other.unlink(missing_ok=True)

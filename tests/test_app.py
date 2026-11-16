@@ -151,12 +151,22 @@ class EditAndReloadTest(unittest.TestCase):
         self.assertTrue((self.dir / "A - T.txt").exists())
         self.sf.assert_not_called()
 
-    def test_edit_save_failure_shows_message(self):
-        with mock.patch.object(appmod, "ask_lyrics_text", return_value="x"), \
+    def test_edit_save_failure_reopens_dialog_with_text_and_keeps_lyrics(self):
+        with mock.patch.object(appmod, "ask_lyrics_text", side_effect=["pasted", None]) as ask, \
                 mock.patch.object(appmod, "save_custom", side_effect=OSError("disk")):
             self.a._edit()
-        self.assertEqual(self.a.win.statuses[-1], appmod.MSG_SAVE_FAILED)
+        self.assertEqual(ask.call_count, 2)
+        heading, initial = ask.call_args[0][1], ask.call_args[0][2]
+        self.assertIn(appmod.MSG_SAVE_FAILED, heading)
+        self.assertEqual(initial, "pasted")
+        self.assertEqual(self.a.win.statuses, [])  # lyrics view untouched
         self.sf.assert_not_called()
+
+    def test_edit_save_failure_then_success_refetches_once(self):
+        with mock.patch.object(appmod, "ask_lyrics_text", side_effect=["x", "x"]), \
+                mock.patch.object(appmod, "save_custom", side_effect=[OSError("disk"), None]):
+            self.a._edit()
+        self.sf.assert_called_once_with(KEY, TRACK)
 
     def test_edit_without_song_is_noop(self):
         self.a.current = None

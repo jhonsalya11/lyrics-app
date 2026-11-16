@@ -85,6 +85,45 @@ class CustomStoreTest(unittest.TestCase):
         self.assertEqual(read_custom_text("J", "A", self.dir), "[00:01.00]hi")
 
 
+class ReviewFixesTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name) / "lyrics"
+
+    def test_one_timestamp_like_line_keeps_plain_text_plain(self):
+        path = save_custom("J", "A", "a\nb\n[2:30] guitar solo\nc", self.dir)
+        self.assertEqual(path.suffix, ".txt")
+        res = load_custom("J", "A", self.dir)
+        self.assertFalse(res.synced)
+        self.assertEqual([t for _, t in res.lines], ["a", "b", "[2:30] guitar solo", "c"])
+
+    def test_mostly_timestamped_text_is_lrc(self):
+        save_custom("J", "A", "[00:01.00]a\n[00:02.00]b\nuntimed", self.dir)
+        res = load_custom("J", "A", self.dir)
+        self.assertTrue(res.synced)
+        self.assertEqual(res.lines, [(1.0, "a"), (2.0, "b")])
+
+    def test_indented_lrc_lines_are_kept(self):
+        save_custom("J", "A", "[00:01.00]a\n  [00:02.00]b\n\t[00:03.00]c", self.dir)
+        res = load_custom("J", "A", self.dir)
+        self.assertEqual(res.lines, [(1.0, "a"), (2.0, "b"), (3.0, "c")])
+
+    def test_bom_is_ignored(self):
+        self.dir.mkdir(parents=True)
+        (self.dir / "A - J.lrc").write_bytes(b"\xef\xbb\xbf[00:01.00]first\n[00:02.00]second")
+        self.assertEqual(load_custom("J", "A", self.dir).lines, [(1.0, "first"), (2.0, "second")])
+        (self.dir / "A - K.txt").write_bytes(b"\xef\xbb\xbfsatu\ndua")
+        self.assertEqual(load_custom("K", "A", self.dir).lines[0], (0.0, "satu"))
+        save_custom("L", "A", "\ufeff[00:01.00]x", self.dir)
+        self.assertEqual(load_custom("L", "A", self.dir).lines, [(1.0, "x")])
+
+    def test_long_cjk_names_fit_the_filesystem(self):
+        path = save_custom("あ" * 100, "い" * 100, "teks", self.dir)
+        self.assertIsNotNone(path)
+        self.assertLessEqual(len(path.name.encode("utf-8")), 255)
+
+
 class Opener:
     def __init__(self, payload=None, error=None):
         self.calls = 0

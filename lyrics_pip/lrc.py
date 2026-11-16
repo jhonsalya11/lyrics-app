@@ -8,6 +8,7 @@ def parse_lrc(text: str) -> list[tuple[float, str]]:
     """Parse LRC text into sorted (seconds, text) pairs."""
     result: list[tuple[float, str]] = []
     for raw in (text or "").splitlines():
+        raw = raw.lstrip()  # pasted lyrics are often indented
         stamps = []
         pos = 0
         while True:

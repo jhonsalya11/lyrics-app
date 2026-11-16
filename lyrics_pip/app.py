@@ -142,14 +142,17 @@ class App:
         title = clean_title(track.title, track.artist)
         heading = f"{track.title} — {track.artist}" if track.artist else track.title
         initial = read_custom_text(title, track.artist, CUSTOM_DIR)
-        text = ask_lyrics_text(self.win, heading, initial)
-        if text is None:
-            return
-        try:
-            save_custom(title, track.artist, text, CUSTOM_DIR)
-        except OSError:
-            self.win.set_status(MSG_SAVE_FAILED)
-            return
+        while True:
+            text = ask_lyrics_text(self.win, heading, initial)
+            if text is None:
+                return
+            try:
+                save_custom(title, track.artist, text, CUSTOM_DIR)
+                break
+            except OSError as e:
+                # Keep what the user pasted and leave the lyrics view alone.
+                heading = f"{MSG_SAVE_FAILED}: {e.strerror or e}\n{track.title}"
+                initial = text
         if self.track_key == key:  # song may have changed while the dialog was open
             self._start_fetch(key, track)
 
