@@ -14,7 +14,8 @@ from .lrc import active_index
 from .custom import CUSTOM_DIR, read_custom_text, resolve_lyrics, save_custom
 from .lyrics import NETWORK_ERROR, clean_title, forget_cached
 from .mpris import MprisReader
-from .ui import LyricsWindow, ask_lyrics_text
+from .syncer import SyncSession, format_timestamp
+from .ui import LyricsWindow, ask_lyrics_text, load_config
 
 CACHE_DIR = Path.home() / ".cache" / "lyrics-pip"
 FAST_MS = 250
@@ -28,6 +29,7 @@ MSG_SEARCHING = "Mencari lirik..."
 MSG_NOT_FOUND = "Lirik tidak ditemukan"
 MSG_RETRY = "Gagal memuat lirik, mencoba lagi..."
 MSG_SAVE_FAILED = "Gagal menyimpan lirik"
+MSG_SYNC_ABORTED = "Sinkron dibatalkan: lagu berganti"
 
 
 class App:
@@ -39,12 +41,14 @@ class App:
         self.token = 0
         self.lyrics = None
         self.current = None
+        self.sync = None
         self._interval = FAST_MS
         self._timer = 0
         self._misses = 0
 
         self.win.on_edit = self._edit
         self.win.on_reload = self._reload
+        self.win.on_sync = self._sync_start
         self.win.connect("destroy", lambda *_: Gtk.main_quit())
         self.win.set_status(MSG_IDLE)
         self.win.show_all()
@@ -86,8 +90,9 @@ class App:
         if key != self.track_key:
             self._start_fetch(key, track)
 
+        # Keep the estimator current even for plain lyrics: tap-sync reads it on click.
+        pos = self.estimator.update(state.position, time.monotonic(), state.playing)
         if self.lyrics is not None and self.lyrics.synced:
-            pos = self.estimator.update(state.position, time.monotonic(), state.playing)
             self.win.set_active(active_index(self.lyrics.lines, pos))
         return FAST_MS if state.playing else SLOW_MS
 
@@ -96,11 +101,14 @@ class App:
         self.track_key = None
         self.current = None
         self.lyrics = None
+        self._sync_abort()
         self.win.set_song_controls(False)
+        self.win.set_sync_button_visible(False)
         self.win.set_status(message)
 
     # ---- fetching ------------------------------------------------------
     def _start_fetch(self, key, track) -> None:
+        aborted = self._sync_abort()
         self.token += 1
         token = self.token
         self.track_key = key
@@ -108,7 +116,8 @@ class App:
         self.lyrics = None
         self.estimator = PositionEstimator()
         self.win.set_song_controls(True)
-        self.win.set_status(MSG_SEARCHING)
+        self.win.set_sync_button_visible(False)
+        self.win.set_status(MSG_SYNC_ABORTED + "\n" + MSG_SEARCHING if aborted else MSG_SEARCHING)
 
         def work():
             result = resolve_lyrics(
@@ -122,6 +131,9 @@ class App:
     def _deliver(self, token, result, track) -> bool:
         if token != self.token:  # song changed while downloading: drop it
             return False
+        self.win.set_sync_button_visible(
+            result is not None and result is not NETWORK_ERROR and not result.synced
+        )
         if result is NETWORK_ERROR:
             self.lyrics = None
             self.win.set_status(MSG_RETRY)
@@ -164,6 +176,90 @@ class App:
             clean_title(track.title, track.artist), track.artist, track.length, CACHE_DIR
         )
         self._start_fetch(self.track_key, track)
+
+    # ---- tap-sync --------------------------------------------------------
+    def _current_position(self):
+        """Live playback position (estimated), or None if no song / song changed."""
+        state = self.reader.read()
+        if state is None or state.track is None:
+            return None
+        t = state.track
+        if (t.title, t.artist, round(t.length)) != self.track_key:
+            return None
+        return self.estimator.update(state.position, time.monotonic(), state.playing)
+
+    def _sync_refresh(self, message: str = "", bad=None) -> None:
+        s = self.sync
+        self.win.set_sync_state(s.next_index(), s.done(), s.total(), message, bad)
+
+    def _sync_start(self) -> None:
+        lyrics = self.lyrics
+        if self.sync is not None or self.current is None or lyrics is None or lyrics.synced:
+            return
+        session = SyncSession([text for _, text in lyrics.lines])
+        if session.total() == 0:
+            return
+        self.sync = session
+        self.win.enter_sync_mode(
+            session.texts, self._sync_mark, self._sync_mark_next,
+            self._sync_save, self._sync_cancel,
+        )
+        self._sync_refresh()
+
+    def _sync_mark(self, index: int) -> None:
+        if self.sync is None:
+            return
+        position = self._current_position()
+        if position is None:
+            self._sync_refresh(MSG_IDLE)
+            return
+        stamp = self.sync.mark(index, position, load_config()["sync_offset"])
+        self.win.set_sync_row(index, format_timestamp(stamp))
+        self._sync_refresh()
+
+    def _sync_mark_next(self) -> None:
+        if self.sync is None:
+            return
+        index = self.sync.next_index()
+        if index is not None:
+            self._sync_mark(index)
+
+    def _sync_save(self) -> None:
+        session = self.sync
+        if session is None:
+            return
+        if not session.is_complete():
+            self._sync_refresh("Tandai semua baris dulu")
+            return
+        bad = session.first_out_of_order()
+        if bad is not None:
+            self._sync_refresh(f"Urutan waktu tidak naik pada baris {bad + 1}", bad)
+            return
+        track, key = self.current, self.track_key
+        try:
+            save_custom(clean_title(track.title, track.artist), track.artist,
+                        session.to_lrc(), CUSTOM_DIR)
+        except OSError as e:
+            self._sync_refresh(f"{MSG_SAVE_FAILED}: {e.strerror or e}")
+            return
+        self.sync = None
+        self.win.exit_sync_mode()
+        if self.track_key == key:
+            self._start_fetch(key, track)
+
+    def _sync_cancel(self) -> None:
+        if not self._sync_abort():
+            return
+        if self.lyrics is not None and self.current is not None:
+            self.win.set_lyrics(self.lyrics, self.current.title, self.current.artist)
+
+    def _sync_abort(self) -> bool:
+        """Leave sync mode, discarding stamps. True if a session was active."""
+        if self.sync is None:
+            return False
+        self.sync = None
+        self.win.exit_sync_mode()
+        return True
 
     def _retry(self, token, key, track) -> bool:
         if token == self.token and key == self.track_key:  # same song still playing

@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest import mock
 
 from lyrics_pip import app as appmod
-from lyrics_pip.lyrics import NETWORK_ERROR
+from lyrics_pip.lyrics import NETWORK_ERROR, Lyrics
 from lyrics_pip.mpris import PlayerState, Track
 from lyrics_pip.ui import is_visible_position
 
@@ -25,6 +25,13 @@ class FakeWin:
         self.statuses = []
         self.actions = []
         self.controls = []
+        self.sync_buttons = []
+        self.sync_texts = None
+        self.entered = 0
+        self.rows = []
+        self.sync_states = []
+        self.exits = 0
+        self.lyrics_shown = []
 
     def set_status(self, text, action=None):
         self.statuses.append(text)
@@ -33,8 +40,28 @@ class FakeWin:
     def set_song_controls(self, visible):
         self.controls.append(visible)
 
+    # --- sync mode recording ---
+    def set_sync_button_visible(self, v):
+        self.sync_buttons.append(v)
+
+    def enter_sync_mode(self, texts, on_mark, on_mark_next, on_save, on_cancel):
+        self.sync_texts = list(texts)
+        self.entered += 1
+
+    def set_sync_row(self, i, text):
+        self.rows.append((i, text))
+
+    def set_sync_state(self, next_index, done, total, message="", bad_index=None):
+        self.sync_states.append(
+            {"next": next_index, "done": done, "total": total, "message": message, "bad": bad_index}
+        )
+
+    def exit_sync_mode(self):
+        self.exits += 1
+
     def set_lyrics(self, *a):
         self.statuses.append("lyrics")
+        self.lyrics_shown.append(a)
 
     def set_active(self, i):
         pass
@@ -45,6 +72,7 @@ def make_app():
     a.win, a.reader = FakeWin(), FakeReader()
     a.track_key, a.token, a.lyrics = KEY, 1, None
     a.current = TRACK
+    a.sync = None
     a._interval, a._timer, a._misses = appmod.FAST_MS, 0, 0
     a.estimator = appmod.PositionEstimator()
     return a
@@ -203,6 +231,140 @@ class ControlsTest(unittest.TestCase):
         for _ in range(3):
             a._poll()
         self.assertEqual(a.win.controls, [True, False])
+
+
+class TapSyncTest(unittest.TestCase):
+    PLAIN = Lyrics([(0.0, "a"), (0.0, ""), (0.0, "b")], False)
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+        self.a = make_app()
+        self.a.lyrics = self.PLAIN
+        for patcher in (
+            mock.patch.object(appmod, "CUSTOM_DIR", self.dir),
+            mock.patch.object(appmod, "load_config", return_value={"sync_offset": 0.3}),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        sf = mock.patch.object(self.a, "_start_fetch", create=True)
+        self.sf = sf.start()
+        self.addCleanup(sf.stop)
+
+    def start(self):
+        self.a._sync_start()
+        return self.a.sync
+
+    def test_sync_button_only_for_plain_lyrics(self):
+        self.a._deliver(1, Lyrics([(0.0, "a")], False), TRACK)
+        self.assertIs(self.a.win.sync_buttons[-1], True)
+        self.a._deliver(1, Lyrics([(1.0, "a")], True), TRACK)
+        self.assertIs(self.a.win.sync_buttons[-1], False)
+        self.a._deliver(1, None, TRACK)
+        self.assertIs(self.a.win.sync_buttons[-1], False)
+
+    def test_start_fetch_hides_sync_button(self):
+        b = make_app()
+        with mock.patch.object(appmod.threading, "Thread"):
+            b._start_fetch(KEY, TRACK)
+        self.assertIs(b.win.sync_buttons[-1], False)
+
+    def test_sync_start_only_with_plain_lyrics_that_have_text(self):
+        for lyrics in (None, Lyrics([(1.0, "a")], True), Lyrics([(0.0, ""), (0.0, "  ")], False)):
+            self.a.lyrics = lyrics
+            self.a._sync_start()
+            self.assertEqual(self.a.win.entered, 0)
+            self.assertIsNone(self.a.sync)
+        self.a.lyrics = self.PLAIN
+        self.a._sync_start()
+        self.assertEqual(self.a.win.entered, 1)
+        self.assertEqual(self.a.win.sync_texts, ["a", "b"])
+        self.assertIsNotNone(self.a.sync)
+
+    def test_mark_uses_live_position_minus_offset(self):
+        s = self.start()
+        self.a.reader.result = PlayerState(TRACK, 12.0, True)
+        self.a._sync_mark(0)
+        self.assertAlmostEqual(s.stamps[0], 12.2, places=3)
+        self.assertEqual(self.a.win.rows[-1], (0, "[00:12.20]"))
+
+    def test_poll_keeps_estimator_current_even_for_plain_lyrics(self):
+        s = self.start()
+        self.a.reader.result = PlayerState(TRACK, 10.0, True)
+        self.a._poll()
+        self.a.reader.result = PlayerState(TRACK, 11.0, True)
+        self.a._poll()
+        self.a._sync_mark(0)
+        self.assertAlmostEqual(s.stamps[0], 10.7, places=1)  # not 11.2
+
+    def test_mark_without_song_makes_no_stamp_and_shows_message(self):
+        s = self.start()
+        self.a.reader.result = None
+        self.a._sync_mark(0)
+        self.a._sync_mark_next()
+        self.assertEqual(s.stamps, [None, None])
+        self.assertEqual(self.a.win.sync_states[-1]["message"], appmod.MSG_IDLE)
+
+    def test_space_marks_next_in_order(self):
+        s = self.start()
+        self.a.reader.result = PlayerState(TRACK, 5.0, True)
+        self.a._sync_mark_next()
+        self.a._sync_mark_next()
+        self.assertEqual([x is not None for x in s.stamps], [True, True])
+        before = list(s.stamps)
+        self.a._sync_mark_next()
+        self.assertEqual(s.stamps, before)
+
+    def test_save_rejects_incomplete_and_out_of_order(self):
+        s = self.start()
+        self.a._sync_save()
+        self.assertEqual(list(self.dir.iterdir()), [])
+        self.assertTrue(self.a.win.sync_states[-1]["message"])
+        s.stamps = [10.0, 5.0]
+        self.a._sync_save()
+        self.assertEqual(list(self.dir.iterdir()), [])
+        self.assertEqual(self.a.win.sync_states[-1]["bad"], 1)
+        self.assertIsNotNone(self.a.sync)
+
+    def test_save_writes_lrc_exits_and_refetches(self):
+        s = self.start()
+        s.stamps = [10.0, 12.0]
+        self.a._sync_save()
+        self.assertEqual(
+            (self.dir / "A - T.lrc").read_text(encoding="utf-8").strip(),
+            "[00:10.00]a\n[00:12.00]b",
+        )
+        self.assertEqual(self.a.win.exits, 1)
+        self.assertIsNone(self.a.sync)
+        self.sf.assert_called_once_with(KEY, TRACK)
+
+    def test_save_failure_keeps_session(self):
+        s = self.start()
+        s.stamps = [10.0, 12.0]
+        with mock.patch.object(appmod, "save_custom", side_effect=OSError("disk")):
+            self.a._sync_save()
+        self.assertIs(self.a.sync, s)
+        self.assertEqual(self.a.win.exits, 0)
+        self.assertTrue(self.a.win.sync_states[-1]["message"])
+        self.sf.assert_not_called()
+
+    def test_cancel_restores_lyrics_without_saving(self):
+        self.start()
+        self.a._sync_cancel()
+        self.assertEqual(self.a.win.exits, 1)
+        self.assertIsNone(self.a.sync)
+        self.assertEqual(self.a.win.lyrics_shown[-1][0], self.PLAIN)
+        self.assertEqual(list(self.dir.iterdir()), [])
+
+    def test_track_change_during_sync_aborts(self):
+        self.start()
+        b = self.a
+        with mock.patch.object(appmod.threading, "Thread"):
+            appmod.App._start_fetch(b, ("Lain", "B", 100), Track("Lain", "B", "", 100.0))
+        self.assertEqual(b.win.exits, 1)
+        self.assertIsNone(b.sync)
+        self.assertIn(appmod.MSG_SYNC_ABORTED, b.win.statuses[-1])
 
 
 class VisiblePositionTest(unittest.TestCase):
