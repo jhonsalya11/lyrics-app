@@ -8,7 +8,8 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
 CONFIG_PATH = Path.home() / ".config" / "lyrics-pip" / "config.json"
-DEFAULT_CONFIG = {"x": None, "y": None, "w": 380, "h": 300, "opacity": 0.92}
+DEFAULT_CONFIG = {"x": None, "y": None, "w": 380, "h": 300, "opacity": 0.92,
+                  "sync_offset": 0.3}
 EDGE = 8
 
 CSS = b"""
@@ -30,6 +31,11 @@ def load_config(path=CONFIG_PATH) -> dict:
     except (OSError, ValueError):
         pass
     cfg["opacity"] = min(1.0, max(0.3, float(cfg.get("opacity") or 0.92)))
+    try:
+        offset = float(cfg.get("sync_offset"))
+    except (TypeError, ValueError):
+        offset = DEFAULT_CONFIG["sync_offset"]
+    cfg["sync_offset"] = min(2.0, max(0.0, offset))  # 0 is a valid value
     return cfg
 
 
