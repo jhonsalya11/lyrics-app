@@ -83,6 +83,21 @@ Categories=AudioVideo;Audio;Player;
 
 Untuk menyala otomatis saat login, salin file yang sama ke `~/.config/autostart/`.
 
+## Lirik pribadi
+
+Untuk lagu yang tidak ditemukan di LRCLIB, atau yang liriknya salah, Anda bisa menempel lirik sendiri.
+
+- **Tambah lirik:** saat muncul "Lirik tidak ditemukan", klik tombol **Tambah lirik**, tempel teksnya, klik **Simpan**. Lirik langsung tampil.
+- **Ubah lirik:** tombol **✎** di header (muncul saat ada lagu) membuka kotak tempel. Kalau lagu itu sudah punya lirik pribadi, kotaknya terisi lirik tersebut.
+- **Hapus lirik pribadi:** kosongkan kotak lalu **Simpan**. Aplikasi kembali memakai lirik dari LRCLIB.
+- **Muat ulang:** tombol **⟳** di header menghapus cache lagu yang sedang diputar dan mengambilnya lagi dari awal (misalnya setelah liriknya ditambahkan ke LRCLIB).
+
+Teks boleh berupa lirik biasa (tampil tanpa sorotan) atau format LRC seperti `[00:12.50] baris lirik` (baris aktif tersorot dan mengikuti lagu). Formatnya dikenali otomatis.
+
+Lirik pribadi disimpan sebagai file di folder `lyrics/` di dalam proyek, bernama `Artis - Judul.lrc` atau `Artis - Judul.txt`. Anda juga bisa menaruh file di sana secara manual. File pribadi selalu dipakai lebih dulu daripada LRCLIB.
+
+> **Folder `lyrics/` sengaja di-ignore git dan tidak boleh di-commit.** Lirik lagu berhak cipta, dan repo ini Public. Kalau ingin mencadangkannya, pakai repo Private terpisah atau salin manual.
+
 ## Tes
 
 ```bash
@@ -97,6 +112,7 @@ lyrics_pip/
   lyrics.py   klien LRCLIB (dengan fallback) dan cache disk
   mpris.py    pembaca MPRIS dari Firefox
   clock.py    penaksir posisi (Firefox hanya melaporkan detik bulat)
+  custom.py   lirik pribadi (folder lyrics/) dan urutan pencarian
   ui.py       jendela GTK
   app.py      perangkai dan main()
   instance.py penjaga instance tunggal (file lock)
