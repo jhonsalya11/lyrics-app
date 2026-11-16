@@ -1,0 +1,147 @@
+import signal
+import threading
+import time
+from pathlib import Path
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+from gi.repository import GLib, Gtk  # noqa: E402
+
+from .clock import PositionEstimator
+from .lrc import active_index
+from .lyrics import NETWORK_ERROR, clean_title, fetch_lyrics
+from .mpris import MprisReader
+from .ui import LyricsWindow
+
+CACHE_DIR = Path.home() / ".cache" / "lyrics-pip"
+FAST_MS = 250
+SLOW_MS = 1000
+IDLE_MS = 2000
+MAX_MISSES = 3
+RETRY_MS = 20000
+
+MSG_IDLE = "Tidak ada lagu diputar"
+MSG_SEARCHING = "Mencari lirik..."
+MSG_NOT_FOUND = "Lirik tidak ditemukan"
+MSG_RETRY = "Gagal memuat lirik, mencoba lagi..."
+
+
+class App:
+    def __init__(self):
+        self.win = LyricsWindow()
+        self.reader = MprisReader()
+        self.estimator = PositionEstimator()
+        self.track_key = None
+        self.token = 0
+        self.lyrics = None
+        self._interval = FAST_MS
+        self._timer = 0
+        self._misses = 0
+
+        self.win.connect("destroy", lambda *_: Gtk.main_quit())
+        self.win.set_status(MSG_IDLE)
+        self.win.show_all()
+        self._schedule(FAST_MS)
+
+    # ---- polling -------------------------------------------------------
+    def _schedule(self, ms: int) -> None:
+        if self._timer:
+            GLib.source_remove(self._timer)
+        self._interval = ms
+        self._timer = GLib.timeout_add(ms, self._tick)
+
+    def _tick(self) -> bool:
+        try:
+            wanted = self._poll()
+        except Exception:
+            wanted = IDLE_MS
+        if wanted != self._interval:
+            self._schedule(wanted)
+            return False
+        return True
+
+    def _poll(self) -> int:
+        state = self.reader.read()
+        if state is None or state.track is None:
+            # Tolerate brief MPRIS hiccups (e.g. Firefox stalled under memory
+            # pressure): only give up after several consecutive misses.
+            self._misses += 1
+            if self.track_key is None:
+                return IDLE_MS
+            if self._misses >= MAX_MISSES:
+                self._reset(MSG_IDLE)
+                return IDLE_MS
+            return FAST_MS
+        self._misses = 0
+
+        track = state.track
+        key = (track.title, track.artist, round(track.length))
+        if key != self.track_key:
+            self._start_fetch(key, track)
+
+        if self.lyrics is not None and self.lyrics.synced:
+            pos = self.estimator.update(state.position, time.monotonic(), state.playing)
+            self.win.set_active(active_index(self.lyrics.lines, pos))
+        return FAST_MS if state.playing else SLOW_MS
+
+    def _reset(self, message: str) -> None:
+        self.token += 1
+        self.track_key = None
+        self.lyrics = None
+        self.win.set_status(message)
+
+    # ---- fetching ------------------------------------------------------
+    def _start_fetch(self, key, track) -> None:
+        self.token += 1
+        token = self.token
+        self.track_key = key
+        self.lyrics = None
+        self.estimator = PositionEstimator()
+        self.win.set_status(MSG_SEARCHING)
+
+        def work():
+            result = fetch_lyrics(
+                clean_title(track.title), track.artist, track.album,
+                track.length, CACHE_DIR,
+            )
+            GLib.idle_add(self._deliver, token, result, track)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _deliver(self, token, result, track) -> bool:
+        if token != self.token:  # song changed while downloading: drop it
+            return False
+        if result is NETWORK_ERROR:
+            self.lyrics = None
+            self.win.set_status(MSG_RETRY)
+            GLib.timeout_add(RETRY_MS, self._retry, token, self.track_key, track)
+            return False
+        self.lyrics = result
+        if result is None:
+            self.win.set_status(MSG_NOT_FOUND)
+        else:
+            self.win.set_lyrics(result, track.title, track.artist)
+        return False
+
+
+    def _retry(self, token, key, track) -> bool:
+        if token == self.token and key == self.track_key:  # same song still playing
+            self._start_fetch(key, track)
+        return False
+
+
+def main() -> None:
+    app = App()
+
+    def quit_cleanly():
+        app.win.close()  # runs delete-event, which saves window position/size/opacity
+        return False
+
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, quit_cleanly)
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, quit_cleanly)
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()
