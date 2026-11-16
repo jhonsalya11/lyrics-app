@@ -16,8 +16,10 @@ TIMEOUT = 8
 NOT_FOUND_TTL = 3600
 
 _SUFFIX = re.compile(
-    r"\s*[\(\[]\s*(official[^\)\]]*|lyrics?[^\)\]]*|audio[^\)\]]*|video[^\)\]]*"
-    r"|mv|music video)[\)\]]\s*$",
+    r"\s*[\(\[]\s*("
+    r"official\b[^\)\]]*|lyrics?\b[^\)\]]*|audio\b[^\)\]]*|video\b[^\)\]]*"
+    r"|mv|music video|\d+k|hd|hq|\d{3,4}p"
+    r")[\)\]]\s*$",
     re.IGNORECASE,
 )
 
@@ -28,12 +30,18 @@ class Lyrics:
     synced: bool
 
 
-def clean_title(title: str) -> str:
+def clean_title(title: str, artist: str = "") -> str:
+    """Strip video/audio decorations and, if it matches `artist`, a leading 'Artist - '."""
     prev = None
     while prev != title:
         prev = title
         title = _SUFFIX.sub("", title)
-    return title.strip()
+    title = title.strip()
+    if artist:
+        head, sep, rest = title.partition(" - ")
+        if sep and rest.strip() and head.strip().casefold() == artist.strip().casefold():
+            title = rest.strip()
+    return title
 
 
 def _cache_path(cache_dir: Path, title, artist, duration) -> Path:

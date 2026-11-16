@@ -103,7 +103,7 @@ class App:
 
         def work():
             result = fetch_lyrics(
-                clean_title(track.title), track.artist, track.album,
+                clean_title(track.title, track.artist), track.artist, track.album,
                 track.length, CACHE_DIR,
             )
             GLib.idle_add(self._deliver, token, result, track)

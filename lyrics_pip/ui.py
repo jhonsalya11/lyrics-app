@@ -77,6 +77,7 @@ class LyricsWindow(Gtk.Window):
         self.set_keep_above(True)
         self.set_skip_taskbar_hint(True)
         self.stick()  # visible on every workspace
+        self.set_accept_focus(False)  # never steal keyboard focus from the user's work
         self.set_title("Lyrics PiP")
         self.set_resizable(True)
         self.set_default_size(self._cfg["w"], self._cfg["h"])

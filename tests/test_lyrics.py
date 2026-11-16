@@ -39,6 +39,23 @@ class CleanTitleTest(unittest.TestCase):
         self.assertEqual(clean_title("Judul [Lyrics]"), "Judul")
         self.assertEqual(clean_title("Judul"), "Judul")
 
+    def test_clean_title_multiple_and_variant_suffixes(self):
+        self.assertEqual(clean_title("Song (Official Video) [4K]"), "Song")
+        self.assertEqual(clean_title("Song (Official Audio)"), "Song")
+        self.assertEqual(clean_title("Song [Official Lyric Video]"), "Song")
+        self.assertEqual(clean_title("Song (Lyrics) [HD]"), "Song")
+
+    def test_clean_title_keeps_real_title_parts(self):
+        self.assertEqual(clean_title("Song (Videotape Version)"), "Song (Videotape Version)")
+        self.assertEqual(clean_title("Song (Remastered 2011)"), "Song (Remastered 2011)")
+
+    def test_clean_title_drops_leading_artist_only_when_it_matches(self):
+        self.assertEqual(clean_title("Alesana - Song", "Alesana"), "Song")
+        self.assertEqual(clean_title("alesana - Song (Official Video)", "Alesana"), "Song")
+        self.assertEqual(clean_title("Other - Song", "Alesana"), "Other - Song")
+        self.assertEqual(clean_title("Alesana - B - C", "Alesana"), "B - C")
+        self.assertEqual(clean_title("Alesana - Song"), "Alesana - Song")
+
 
 class FetchLyricsTest(unittest.TestCase):
     def setUp(self):
