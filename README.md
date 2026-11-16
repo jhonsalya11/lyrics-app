@@ -111,8 +111,8 @@ Kalau liriknya masih teks biasa (tanpa timestamp), Anda bisa menandai waktunya s
 Catatan:
 - Baris kosong dilewati dan tidak ikut ditandai.
 - **Simpan** ditolak kalau urutan waktunya tidak naik (misalnya Anda mengklik ulang baris awal terlalu belakangan). Baris yang bermasalah ditandai merah dengan pesannya.
-- Selama mode sinkron, jendela menerima fokus keyboard supaya Spasi bisa dipakai. Setelah selesai, jendela kembali tidak mengambil fokus.
-- Kalau lagu berganti atau Firefox ditutup saat mode sinkron, mode dibatalkan dan tanda dibuang.
+- Saat Anda klik **⏱**, jendela lirik mengambil fokus keyboard supaya **Spasi** menandai baris (bukan menjeda lagu di Firefox). Spasi yang ditahan dihitung satu kali. Saat mode sinkron berakhir (Simpan, Batal, atau lagu berganti), fokus dikembalikan ke jendela sebelumnya dan jendela lirik kembali tidak mengambil fokus. Ini diuji di lingkungan uji dengan xfwm4; kalau pengaturan "focus stealing prevention" di desktop Anda menolaknya, klik sekali pada jendela Firefox setelah selesai.
+- **Lagu berganti saat mode sinkron:** kalau semua baris sudah bertanda dan urutannya benar (misalnya lagu selesai sebelum sempat klik Simpan), hasilnya **otomatis disimpan** untuk lagu yang tadi disinkronkan. Kalau belum lengkap atau urutannya salah, tanda dibuang. Firefox yang macet sebentar atau perubahan durasi yang dilaporkan tidak membatalkan sesi.
 - **Kompensasi waktu reaksi:** timestamp = posisi lagu dikurangi `sync_offset` detik, karena Anda mengklik sedikit setelah baris mulai dinyanyikan. Atur di `~/.config/lyrics-pip/config.json` (bawaan `0.3`, rentang `0` sampai `2`; nilai tidak valid dianggap `0.3`). Kalau hasilnya konsisten terlalu awal, kurangi nilainya; kalau terlalu terlambat, tambah. Tutup aplikasi sebelum mengedit file ini.
 
 ## Tes

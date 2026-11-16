@@ -366,6 +366,47 @@ class TapSyncTest(unittest.TestCase):
         self.assertIsNone(b.sync)
         self.assertIn(appmod.MSG_SYNC_ABORTED, b.win.statuses[-1])
 
+    def test_track_change_with_complete_ordered_session_saves_for_old_song(self):
+        s = self.start()
+        s.stamps = [10.0, 12.0]
+        with mock.patch.object(appmod.threading, "Thread"):
+            appmod.App._start_fetch(self.a, ("Lain", "B", 100), Track("Lain", "B", "", 100.0))
+        self.assertEqual(
+            (self.dir / "A - T.lrc").read_text(encoding="utf-8").strip(),
+            "[00:10.00]a\n[00:12.00]b",
+        )
+        self.assertIsNone(self.a.sync)
+        self.assertEqual(self.a.win.exits, 1)
+        self.assertIn("Sinkron tersimpan", self.a.win.statuses[-1])
+
+    def test_track_change_with_out_of_order_session_discards(self):
+        s = self.start()
+        s.stamps = [10.0, 5.0]
+        with mock.patch.object(appmod.threading, "Thread"):
+            appmod.App._start_fetch(self.a, ("Lain", "B", 100), Track("Lain", "B", "", 100.0))
+        self.assertEqual(list(self.dir.iterdir()), [])
+        self.assertIn(appmod.MSG_SYNC_ABORTED, self.a.win.statuses[-1])
+
+    def test_transient_mpris_loss_keeps_sync_session(self):
+        s = self.start()
+        self.a.reader.result = None
+        for _ in range(appmod.MAX_MISSES + 3):
+            self.a._poll()
+        self.assertIs(self.a.sync, s)
+        self.assertEqual(self.a.win.exits, 0)
+        self.assertNotIn(appmod.MSG_IDLE, self.a.win.statuses)
+
+    def test_length_update_during_sync_does_not_refetch_or_block_marking(self):
+        s = self.start()
+        longer = Track("T", "A", "Al", 201.0)
+        self.a.reader.result = PlayerState(longer, 7.0, True)
+        self.a._poll()
+        self.sf.assert_not_called()
+        self.assertIs(self.a.sync, s)
+        self.assertEqual(self.a.track_key, ("T", "A", 201))
+        self.a._sync_mark(0)
+        self.assertIsNotNone(s.stamps[0])
+
 
 class VisiblePositionTest(unittest.TestCase):
     MON = [(0, 0, 1920, 1080)]

@@ -30,6 +30,7 @@ MSG_NOT_FOUND = "Lirik tidak ditemukan"
 MSG_RETRY = "Gagal memuat lirik, mencoba lagi..."
 MSG_SAVE_FAILED = "Gagal menyimpan lirik"
 MSG_SYNC_ABORTED = "Sinkron dibatalkan: lagu berganti"
+MSG_SYNC_SAVED = "Sinkron tersimpan: {title}"
 
 
 class App:
@@ -74,6 +75,8 @@ class App:
     def _poll(self) -> int:
         state = self.reader.read()
         if state is None or state.track is None:
+            if self.sync is not None:
+                return FAST_MS  # never lose a tap-sync session to an MPRIS hiccup
             # Tolerate brief MPRIS hiccups (e.g. Firefox stalled under memory
             # pressure): only give up after several consecutive misses.
             self._misses += 1
@@ -88,7 +91,11 @@ class App:
         track = state.track
         key = (track.title, track.artist, round(track.length))
         if key != self.track_key:
-            self._start_fetch(key, track)
+            if self._same_song_during_sync(track):
+                # Only the reported duration changed: keep the session, follow the new key.
+                self.track_key, self.current = key, track
+            else:
+                self._start_fetch(key, track)
 
         # Keep the estimator current even for plain lyrics: tap-sync reads it on click.
         pos = self.estimator.update(state.position, time.monotonic(), state.playing)
@@ -108,7 +115,7 @@ class App:
 
     # ---- fetching ------------------------------------------------------
     def _start_fetch(self, key, track) -> None:
-        aborted = self._sync_abort()
+        note = self._sync_leave_for_new_song()
         self.token += 1
         token = self.token
         self.track_key = key
@@ -117,7 +124,7 @@ class App:
         self.estimator = PositionEstimator()
         self.win.set_song_controls(True)
         self.win.set_sync_button_visible(False)
-        self.win.set_status(MSG_SYNC_ABORTED + "\n" + MSG_SEARCHING if aborted else MSG_SEARCHING)
+        self.win.set_status(f"{note}\n{MSG_SEARCHING}" if note else MSG_SEARCHING)
 
         def work():
             result = resolve_lyrics(
@@ -183,8 +190,8 @@ class App:
         state = self.reader.read()
         if state is None or state.track is None:
             return None
-        t = state.track
-        if (t.title, t.artist, round(t.length)) != self.track_key:
+        t, cur = state.track, self.current
+        if cur is None or (t.title, t.artist) != (cur.title, cur.artist):
             return None
         return self.estimator.update(state.position, time.monotonic(), state.playing)
 
@@ -252,6 +259,29 @@ class App:
             return
         if self.lyrics is not None and self.current is not None:
             self.win.set_lyrics(self.lyrics, self.current.title, self.current.artist)
+
+    def _same_song_during_sync(self, track) -> bool:
+        cur = self.current
+        return (self.sync is not None and cur is not None
+                and (track.title, track.artist) == (cur.title, cur.artist))
+
+    def _sync_leave_for_new_song(self) -> str:
+        """The song changed mid-session. A complete, ordered session is saved for the
+        old song (the usual end of a session: the song ends before Simpan); anything else
+        is discarded. Returns a short note for the status line, or '' if no session."""
+        session, track = self.sync, self.current
+        if session is None:
+            return ""
+        saved = False
+        if track is not None and session.is_complete() and session.first_out_of_order() is None:
+            try:
+                save_custom(clean_title(track.title, track.artist), track.artist,
+                            session.to_lrc(), CUSTOM_DIR)
+                saved = True
+            except OSError:
+                pass
+        self._sync_abort()
+        return MSG_SYNC_SAVED.format(title=track.title) if saved else MSG_SYNC_ABORTED
 
     def _sync_abort(self) -> bool:
         """Leave sync mode, discarding stamps. True if a session was active."""

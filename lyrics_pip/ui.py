@@ -92,6 +92,8 @@ class LyricsWindow(Gtk.Window):
         self._sync_cbs = {}
         self._sync_rows = []
         self._sync_stamps = []
+        self._prev_active = None
+        self._space_down = False
 
         self.set_decorated(False)
         self.set_keep_above(True)
@@ -172,6 +174,8 @@ class LyricsWindow(Gtk.Window):
         # The ScrolledWindow would otherwise swallow Ctrl+scroll over the lyrics.
         self._scroller.connect("scroll-event", self._on_scroll)
         self.connect("key-press-event", self._on_key)
+        self.connect("key-release-event", self._on_key_release)
+        self.connect("focus-out-event", self._on_focus_out)
         self.connect("delete-event", self._on_delete)
 
         if self._cfg["x"] is not None and self._cfg["y"] is not None:
@@ -238,7 +242,21 @@ class LyricsWindow(Gtk.Window):
         }
         for btn in self._saved_vis:
             btn.hide()
+        # Remember who had focus (Firefox) so it can be handed back on exit.
+        try:
+            prev = self.get_screen().get_active_window()
+        except Exception:
+            prev = None
+        own = self.get_window()
+        self._prev_active = None if (prev is None or prev == own) else prev
+        self._space_down = False
         self.set_accept_focus(True)  # needed for the Space shortcut; undone on exit
+        # Take focus now, or Space would still reach Firefox (play/pause) until a row is clicked.
+        stamp = Gtk.get_current_event_time()
+        if stamp:
+            self.present_with_time(stamp)
+        else:
+            self.present()
         self._box.set_valign(Gtk.Align.START)
         self._box.set_margin_top(4)
         self._box.set_margin_bottom(4)
@@ -305,6 +323,13 @@ class LyricsWindow(Gtk.Window):
             return
         self.in_sync_mode = False
         self.set_accept_focus(False)
+        self._space_down = False
+        prev, self._prev_active = self._prev_active, None
+        if prev is not None:  # hand focus back so Space/media keys reach Firefox again
+            try:
+                prev.focus(Gtk.get_current_event_time())
+            except Exception:
+                pass
         self._sync_bar.hide()
         self._sync_cbs = {}
         self._sync_stamps = []
@@ -315,8 +340,19 @@ class LyricsWindow(Gtk.Window):
 
     def _on_key(self, _w, ev):
         if self.in_sync_mode and ev.keyval == Gdk.KEY_space:
-            self._sync_cb("next")
+            if not self._space_down:  # a held key auto-repeats: count one press only
+                self._space_down = True
+                self._sync_cb("next")
             return True
+        return False
+
+    def _on_key_release(self, _w, ev):
+        if ev.keyval == Gdk.KEY_space:
+            self._space_down = False
+        return False
+
+    def _on_focus_out(self, *_):
+        self._space_down = False  # the release may go to another window
         return False
 
     def set_status(self, text: str, action=None) -> None:
